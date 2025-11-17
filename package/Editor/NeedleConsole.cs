@@ -1,5 +1,6 @@
-﻿using System.IO;
+﻿using System;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using Unity.Profiling;
 using UnityEditor;
@@ -10,6 +11,13 @@ namespace Needle.Console
 {
 	public static class NeedleConsole
 	{
+		private static readonly Regex namespaceCompactNoReturnTypeRegex = new Regex(@"(.+?)\(", RegexOptions.Compiled);
+		private static readonly Regex namespaceCompactRegex = new Regex(@" ([^ ]+?)\(", RegexOptions.Compiled);
+		private static readonly Regex paramsRegex = new Regex(@"\((?!at)(.*?)\)", RegexOptions.Compiled);
+		private static readonly Regex paramsArgumentRegex = new Regex(@"([ (])([^),]+?) (.+?)([\),])", RegexOptions.Compiled);
+		private static readonly Regex paramsRefRegex = new Regex(@"\b ?ref ?\b", RegexOptions.Compiled);
+		private static readonly MatchEvaluator namespaceReplacer = NamespaceReplacer;
+		private static readonly MatchEvaluator paramReplacer = ParamReplacer;
 
 		[HyperlinkCallback(Href = "OpenNeedleConsoleSettings")]
 		private static void OpenNeedleConsoleUserPreferences()
@@ -120,6 +128,20 @@ namespace Needle.Console
 							}
 						}
 
+						if (foundPrefix)
+						{
+							if (settings.StacktraceNamespaceMode == NeedleConsoleSettings.StacktraceNamespace.Compact)
+								line = namespaceCompactRegex.Replace(line, namespaceReplacer);
+							else if (settings.StacktraceNamespaceMode == NeedleConsoleSettings.StacktraceNamespace.CompactNoReturnType)
+								line = namespaceCompactNoReturnTypeRegex.Replace(line, namespaceReplacer);
+
+							if (settings.StacktraceParamsMode != NeedleConsoleSettings.StacktraceParams.Full)
+							{
+								line = paramsRefRegex.Replace(line, "");
+								line = paramsRegex.Replace(line, paramReplacer);
+							}
+						}
+
 						if (foundPrefix && settings.UseSyntaxHighlighting)
 							SyntaxHighlighting.AddSyntaxHighlighting(ref line);
 
@@ -151,6 +173,35 @@ namespace Needle.Console
 			{
 				// ignore
 			}
+		}
+
+		private static string NamespaceReplacer(Match match)
+		{
+			var lastDotIndex = match.Value.LastIndexOf(".", StringComparison.Ordinal);
+			if (lastDotIndex == -1)
+				return match.Value;
+
+			// Remove everything but the last two parts leaving only "Class.Method". 
+			var secondLastDotIndex = match.Value.LastIndexOf(".", lastDotIndex - 1, StringComparison.Ordinal);
+			var result = secondLastDotIndex != -1
+				? match.Value[(secondLastDotIndex + 1)..]
+				: match.Value[(lastDotIndex + 1)..];
+
+			var plusIndex = result.LastIndexOf("+", StringComparison.Ordinal);
+			return plusIndex != -1
+				? " " + result[(plusIndex + 1)..]
+				: " " + result;
+		}
+
+		private static string ParamReplacer(Match match)
+		{
+			return NeedleConsoleSettings.instance.StacktraceParamsMode switch
+			{
+				NeedleConsoleSettings.StacktraceParams.TypesOnly => paramsArgumentRegex.Replace(match.Value, "$1$2$4"),
+				NeedleConsoleSettings.StacktraceParams.NamesOnly => paramsArgumentRegex.Replace(match.Value, "$1$3$4"),
+				NeedleConsoleSettings.StacktraceParams.Compact => "()",
+				_ => throw new ArgumentOutOfRangeException(),
+			};
 		}
 	}
 }
