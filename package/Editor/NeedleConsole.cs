@@ -11,13 +11,21 @@ namespace Needle.Console
 {
 	public static class NeedleConsole
 	{
-		private static readonly Regex namespaceCompactNoReturnTypeRegex = new Regex(@"(.+?)\(", RegexOptions.Compiled);
-		private static readonly Regex namespaceCompactRegex = new Regex(@" ([^ ]+?)\(", RegexOptions.Compiled);
+		/// <summary>
+		/// Matches namespaces - "XX.YY.ZZ" is split into the groups "XX.YY" and "ZZ".<br/>
+		/// Also handles generics inside "&lt;" and "&gt;".
+		/// </summary>
+		private static readonly Regex namespaceCompactRegex = new Regex(@"([^<>.\s]+(?:\.[^<>.\s]+)*)(\.)([^<>.(]+)", RegexOptions.Compiled);
 		private static readonly Regex paramsRegex = new Regex(@"\((?!at)(.*?)\)", RegexOptions.Compiled);
 		private static readonly Regex paramsArgumentRegex = new Regex(@"([ (])([^),]+?) (.+?)([\),])", RegexOptions.Compiled);
 		private static readonly Regex paramsRefRegex = new Regex(@"\b ?ref ?\b", RegexOptions.Compiled);
 		private static readonly MatchEvaluator namespaceReplacer = NamespaceReplacer;
 		private static readonly MatchEvaluator paramReplacer = ParamReplacer;
+
+		private static int namespaceLinkStartIndex;
+		private static int namespaceMatchIndex;
+		private static string namespaceStored;
+		private static int namespaceStartIndex;
 
 		[HyperlinkCallback(Href = "OpenNeedleConsoleSettings")]
 		private static void OpenNeedleConsoleUserPreferences()
@@ -130,10 +138,39 @@ namespace Needle.Console
 
 						if (foundPrefix)
 						{
-							if (settings.StacktraceNamespaceMode == NeedleConsoleSettings.StacktraceNamespace.Compact)
+							if (
+								settings.StacktraceNamespaceMode == NeedleConsoleSettings.StacktraceNamespace.Compact ||
+								settings.StacktraceNamespaceMode == NeedleConsoleSettings.StacktraceNamespace.CompactNoReturnType)
+							{
+								namespaceLinkStartIndex = line.IndexOf(" (at ", StringComparison.Ordinal);
+								namespaceMatchIndex = 0;
+								namespaceStartIndex = -1;
+								namespaceStored = "";
+
 								line = namespaceCompactRegex.Replace(line, namespaceReplacer);
-							else if (settings.StacktraceNamespaceMode == NeedleConsoleSettings.StacktraceNamespace.CompactNoReturnType)
-								line = namespaceCompactNoReturnTypeRegex.Replace(line, namespaceReplacer);
+
+								// If the class name was stripped out along with the namespaces, add
+								// it back in here.
+								int methodIndexEndIndex = line.IndexOf('(');
+								if (methodIndexEndIndex != -1 && line.IndexOf('.', 0, methodIndexEndIndex) == -1)
+								{
+									int classIndex = namespaceStored.LastIndexOf('.');
+									if (classIndex != -1)
+									{
+										namespaceStored = namespaceStored[(classIndex + 1)..];
+									}
+									line = line.Insert(namespaceStartIndex, $"{namespaceStored}.");
+								}
+
+								// Remove the return  type.
+								if (settings.StacktraceNamespaceMode == NeedleConsoleSettings.StacktraceNamespace.CompactNoReturnType)
+								{
+									if (namespaceStartIndex != -1)
+									{
+										line = line[namespaceStartIndex..];
+									}
+								}
+							}
 
 							if (settings.StacktraceParamsMode != NeedleConsoleSettings.StacktraceParams.Full)
 							{
@@ -177,20 +214,22 @@ namespace Needle.Console
 
 		private static string NamespaceReplacer(Match match)
 		{
-			var lastDotIndex = match.Value.LastIndexOf(".", StringComparison.Ordinal);
-			if (lastDotIndex == -1)
+			namespaceMatchIndex++;
+
+			// Prevent replacing stuff in the filename link.
+			if (namespaceLinkStartIndex != -1 && match.Index >= namespaceLinkStartIndex)
 				return match.Value;
 
-			// Remove everything but the last two parts leaving only "Class.Method". 
-			var secondLastDotIndex = match.Value.LastIndexOf(".", lastDotIndex - 1, StringComparison.Ordinal);
-			var result = secondLastDotIndex != -1
-				? match.Value[(secondLastDotIndex + 1)..]
-				: match.Value[(lastDotIndex + 1)..];
+			// At this point there's no wa to differentiate between a generic type parameter and "Class.Method",
+			// causing the class name to be stripped which we don't want.
+			// Store this so that the class name can be added back at the start after all replacements have happened.
+			if (namespaceMatchIndex == 1)
+			{
+				namespaceStartIndex = match.Index;
+				namespaceStored = match.Groups[1].Value;
+			}
 
-			var plusIndex = result.LastIndexOf("+", StringComparison.Ordinal);
-			return plusIndex != -1
-				? " " + result[(plusIndex + 1)..]
-				: " " + result;
+			return match.Groups[3].Value;
 		}
 
 		private static string ParamReplacer(Match match)
